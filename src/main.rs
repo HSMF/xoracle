@@ -5,20 +5,19 @@ fn main() {
     let b = std::env::args().nth(2).unwrap_or("the".to_owned());
 
     let words = include_str!("./en_50k.txt");
-    let trie = build_trie(
-        words
-            .lines()
-            .flat_map(|x| x.split_whitespace().next())
-            .filter(|x| x.is_ascii()),
-        [],
-    );
+
+    let wordsi = words
+        .lines()
+        .filter_map(|x| x.split_whitespace().next())
+        .filter(|x| x.is_ascii())
+        .filter(|x| x.len() > 1 || *x == "a")
+        .filter(|x| *x != "th")
+        .filter(|x| *x != "ye");
+
+    let trie = build_trie(wordsi.clone(), []);
     let special_chars = "'\" ,.";
     let more_trie = build_trie(
-        words
-            .lines()
-            .filter_map(|x| x.split_whitespace().next())
-            .filter(|x| x.is_ascii())
-            .flat_map(|x| special_chars.chars().map(move |ch| format!("{ch}{x}"))), // .chain(
+        wordsi.clone(), // .flat_map(|x| special_chars.chars().map(move |ch| format!("{ch}{x}"))), // .chain(
         //     words
         //         .lines()
         //         .filter_map(|x| x.split_whitespace().next())
@@ -30,6 +29,9 @@ fn main() {
 
     let cipher = xor_strings(&a, &b);
     println!("cipher: {cipher:02x?}");
+    println!("  originating from");
+    println!("    {a:?}");
+    println!("    {b:?}");
 
     let res = crack(
         &cipher,
@@ -40,8 +42,8 @@ fn main() {
 
     if let Some((a, b)) = res {
         println!("found valid plain text");
-        println!("  {}", std::str::from_utf8(&a).unwrap());
-        println!("  {}", std::str::from_utf8(&b).unwrap());
+        println!("  {:?}", std::str::from_utf8(&a).unwrap());
+        println!("  {:?}", std::str::from_utf8(&b).unwrap());
 
         let cipher = xor(a, b);
         println!("cipher: {cipher:02x?}");
