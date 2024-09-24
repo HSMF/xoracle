@@ -1,4 +1,4 @@
-use xoracle::{build_trie, crack, xor, xor_strings, Queries};
+use xoracle::{build_trie, crack, crack_non_rec, xor, xor_strings, Queries};
 
 fn main() {
     let a = std::env::args().nth(1).unwrap_or("yes".to_owned());
@@ -49,5 +49,17 @@ fn main() {
         println!("cipher: {cipher:02x?}");
     } else {
         println!("couldn't find valid plain text");
+    }
+
+    let ans = crack_non_rec(&cipher, &trie);
+
+    if ans.is_empty() {
+        println!("couldn't find valid plain text");
+    } else {
+        for (a, b) in ans {
+            println!("  {:?}", a);
+            println!("  {:?}", b);
+            println!();
+        }
     }
 }

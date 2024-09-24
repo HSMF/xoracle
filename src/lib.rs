@@ -1,4 +1,7 @@
 #![allow(clippy::too_many_arguments)]
+use std::fs::File;
+
+use itertools::Itertools;
 use trie_rs::{
     inc_search::{Answer, IncSearch},
     Trie, TrieBuilder,
@@ -467,6 +470,125 @@ fn crack_inner(
     //     b.push(expected);
     //     Some((a, b))
     // })
+}
+
+#[derive(Clone)]
+struct State<'a, 'b> {
+    queries_left: Queries<'a>,
+    queries_right: Queries<'a>,
+    cipher: &'b [u8],
+    left: String,
+    right: String,
+    expected_next1: ExpectedNext,
+    expected_next2: ExpectedNext,
+}
+
+impl<'a, 'b> PartialEq for State<'a, 'b> {
+    fn eq(&self, other: &Self) -> bool {
+        self.left == other.left
+            && self.right == other.right
+            && self.cipher == other.cipher
+            && self.expected_next1 == other.expected_next1
+            && self.expected_next2 == other.expected_next2
+    }
+}
+
+impl PartialOrd for State<'_, '_> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Eq for State<'_, '_> {}
+
+impl Ord for State<'_, '_> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.cipher.len().cmp(&other.cipher.len())
+    }
+}
+
+fn tasks_of_answer(ans: Answer) -> impl Iterator<Item = ExpectedNext> + Clone {
+    ans.is_match()
+        .then_some(ExpectedNext::Special)
+        .into_iter()
+        .chain(ans.is_prefix().then_some(ExpectedNext::Word))
+}
+
+pub fn crack_non_rec(cipher: &[u8], root: &Trie<u8>) -> Vec<(String, String)> {
+    // make this a binary heap?
+    let mut stack = vec![State {
+        queries_left: Queries::new(root.inc_search()),
+        queries_right: Queries::new(root.inc_search()),
+        left: String::with_capacity(cipher.len()),
+        right: String::with_capacity(cipher.len()),
+        cipher,
+        expected_next1: ExpectedNext::Word,
+        expected_next2: ExpectedNext::Word,
+    }];
+
+    let mut res = vec![];
+    let mut seen = 0usize;
+
+    use std::io::Write;
+    let mut f = File::create("res").unwrap();
+
+    while let Some(State {
+        queries_left,
+        queries_right,
+        cipher,
+        left,
+        right,
+        expected_next1,
+        expected_next2,
+    }) = stack.pop()
+    {
+        seen += 1;
+
+        if seen % 10_000 == 0 {
+            eprintln!("seen {seen} states, have {} 'valid' solutions", res.len());
+            f.flush().expect("failed to flush (ew)");
+        }
+        if cipher.is_empty() {
+            writeln!(&mut f, "{left} {right}").expect("failed to write");
+            res.push((left, right));
+            continue;
+        }
+        let it1 = match expected_next1 {
+            ExpectedNext::Word => NextStateExpected::Word(Box::new(NextState::new(queries_left))),
+            ExpectedNext::Special => NextStateExpected::Special { i: 0, root },
+        };
+        let it2 = match expected_next2 {
+            ExpectedNext::Word => NextStateExpected::Word(Box::new(NextState::new(queries_right))),
+            ExpectedNext::Special => NextStateExpected::Special { i: 0, root },
+        };
+
+        for ((ch1, ans1, queries_left), (ch2, ans2, queries_right)) in it1
+            .cartesian_product(it2)
+            .filter(|&((left, _, _), (right, _, _))| left ^ cipher[0] == right)
+        {
+            let mut left = left.clone();
+            left.push(ch1 as char);
+            let mut right = right.clone();
+            right.push(ch2 as char);
+
+            let tasks = tasks_of_answer(ans1).cartesian_product(tasks_of_answer(ans2));
+
+            for (expected_next1, expected_next2) in tasks {
+                stack.push(State {
+                    // yes, this clones one time too much, but do I care?
+                    queries_left: queries_left.clone(),
+                    queries_right: queries_right.clone(),
+                    cipher: &cipher[1..],
+                    left: left.clone(),
+                    right: right.clone(),
+                    expected_next1,
+                    expected_next2,
+                });
+            }
+        }
+    }
+
+    res
 }
 
 #[cfg(test)]
