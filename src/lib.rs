@@ -1,11 +1,13 @@
 #![allow(clippy::too_many_arguments)]
-use std::fs::File;
 
-use itertools::Itertools;
+pub mod all;
+
 use trie_rs::{
     inc_search::{Answer, IncSearch},
-    Trie, TrieBuilder,
+    map::Trie,
 };
+
+pub use all::crack_non_rec;
 
 pub const fn special() -> &'static [u8] {
     b"'\" ,."
@@ -44,20 +46,20 @@ pub const fn charset() -> &'static [u8] {
 //     }
 // }
 
-pub fn build_trie(
-    words: impl Iterator<Item = impl AsRef<str>>,
-    special_chars: impl IntoIterator<Item = u8>,
-) -> Trie<u8> {
-    let mut builder = TrieBuilder::new();
-    for word in words {
-        builder.push(word.as_ref());
-    }
+pub fn build_trie<'a>(
+    words: impl Iterator<Item = &'a str>,
+    // special_chars: impl IntoIterator<Item = u8>,
+) -> Trie<u8, ()> {
+    // let mut builder = TrieBuilder::new();
+    // for word in words {
+    //     builder.push(word.as_ref());
+    // }
+    //
+    // for ch in special_chars {
+    //     builder.push([ch]);
+    // }
 
-    for ch in special_chars {
-        builder.push([ch]);
-    }
-
-    builder.build()
+    words.map(|x| (x.as_bytes(), ())).collect()
 }
 
 pub fn xor(a: impl IntoIterator<Item = u8>, b: impl IntoIterator<Item = u8>) -> Vec<u8> {
@@ -72,9 +74,9 @@ pub fn xor_strings(a: &str, b: &str) -> Vec<u8> {
 
 pub fn crack(
     cipher: &[u8],
-    root: &Trie<u8>,
-    t1: Queries,
-    t2: Queries,
+    root: &Trie<u8, ()>,
+    t1: Queries<()>,
+    t2: Queries<()>,
 ) -> Option<(Vec<u8>, Vec<u8>)> {
     let mut res = crack_inner(
         cipher,
@@ -93,12 +95,12 @@ pub fn crack(
 }
 
 #[derive(Clone, Debug)]
-pub struct Queries<'a> {
-    inner: Vec<IncSearch<'a, u8, ()>>,
+pub struct Queries<'a, T> {
+    inner: Vec<IncSearch<'a, u8, T>>,
 }
 
-impl<'a> Queries<'a> {
-    pub fn new(inner: IncSearch<'a, u8, ()>) -> Self {
+impl<'a, T> Queries<'a, T> {
+    pub fn new(inner: IncSearch<'a, u8, T>) -> Self {
         Self { inner: vec![inner] }
     }
 
@@ -118,15 +120,15 @@ enum ExpectedNext {
 }
 
 #[derive(Debug, Clone)]
-struct NextState<'a> {
+struct NextState<'a, T> {
     charset_idx: usize,
     q_idx: usize,
     did_produce: [bool; 256],
-    q: Queries<'a>,
+    q: Queries<'a, T>,
 }
 
-impl<'a> NextState<'a> {
-    fn new(q: Queries<'a>) -> Self {
+impl<'a, T> NextState<'a, T> {
+    fn new(q: Queries<'a, T>) -> Self {
         Self {
             charset_idx: 0,
             q_idx: 0,
@@ -136,8 +138,11 @@ impl<'a> NextState<'a> {
     }
 }
 
-impl<'a> Iterator for NextState<'a> {
-    type Item = (u8, Answer, Queries<'a>);
+impl<'a, T> Iterator for NextState<'a, T>
+where
+    T: Clone,
+{
+    type Item = (u8, Answer, Option<&'a T>, Queries<'a, T>);
 
     fn next(&mut self) -> Option<Self::Item> {
         while self.charset_idx < charset().len() {
@@ -147,13 +152,15 @@ impl<'a> Iterator for NextState<'a> {
                     self.q_idx += 1;
                     continue;
                 };
+                let mut tmp = self.q.inner[self.q_idx].clone();
+                tmp.query(&chr);
                 let mut q = self.q.clone();
 
                 q.advance_all(chr);
 
                 self.did_produce[chr as usize] = true;
                 self.q_idx += 1;
-                return Some((chr, ans, q));
+                return Some((chr, ans, tmp.value(), q));
             }
 
             self.q_idx = 0;
@@ -165,9 +172,9 @@ impl<'a> Iterator for NextState<'a> {
 }
 
 #[derive(Clone)]
-enum NextStateExpected<'a> {
-    Word(Box<NextState<'a>>),
-    Special { i: usize, root: &'a Trie<u8> },
+enum NextStateExpected<'a, T> {
+    Word(Box<NextState<'a, T>>),
+    Special { i: usize, root: &'a Trie<u8, T> },
     // WordOrSpecial {
     //     i: usize,
     //     root: &'b Trie<u8>,
@@ -175,8 +182,11 @@ enum NextStateExpected<'a> {
     // },
 }
 
-impl<'a> Iterator for NextStateExpected<'a> {
-    type Item = (u8, Answer, Queries<'a>);
+impl<'a, T> Iterator for NextStateExpected<'a, T>
+where
+    T: Clone,
+{
+    type Item = (u8, Answer, Option<&'a T>, Queries<'a, T>);
 
     fn next(&mut self) -> Option<Self::Item> {
         match self {
@@ -187,7 +197,12 @@ impl<'a> Iterator for NextStateExpected<'a> {
                 }
                 let chr = special()[*i];
                 *i += 1;
-                Some((chr, Answer::PrefixAndMatch, Queries::new(root.inc_search())))
+                Some((
+                    chr,
+                    Answer::PrefixAndMatch,
+                    None,
+                    Queries::new(root.inc_search()),
+                ))
             }
         }
     }
@@ -195,15 +210,15 @@ impl<'a> Iterator for NextStateExpected<'a> {
 
 fn try_1(
     cipher: &[u8],
-    root: &Trie<u8>,
-    t1: Queries,
+    root: &Trie<u8, ()>,
+    t1: Queries<()>,
     expected_next1: ExpectedNext,
     ch1: u8,
     ch2: u8,
-    it2: NextStateExpected,
+    it2: NextStateExpected<()>,
     (h1, h2): (String, String),
 ) -> Option<(Vec<u8>, Vec<u8>)> {
-    for (_, ans, t2) in it2.clone().filter(|(ch, _, _)| (*ch == ch2)) {
+    for (_, ans, _, t2) in it2.clone().filter(|(ch, _, _, _)| (*ch == ch2)) {
         if ans.is_prefix() {
             // t2.inner.push(root.inc_search());
             // eprintln!("{h2:?} t2 is prefix");
@@ -248,9 +263,9 @@ fn try_1(
 
 fn try_2(
     cipher: &[u8],
-    root: &Trie<u8>,
-    t1: Queries,
-    t2: Queries,
+    root: &Trie<u8, ()>,
+    t1: Queries<()>,
+    t2: Queries<()>,
     expected_next1: ExpectedNext,
     expected_next2: ExpectedNext,
     ch1: u8,
@@ -283,9 +298,9 @@ fn try_2(
 
 fn crack_inner(
     cipher: &[u8],
-    root: &Trie<u8>,
-    t1: Queries,
-    t2: Queries,
+    root: &Trie<u8, ()>,
+    t1: Queries<()>,
+    t2: Queries<()>,
     expected_next1: ExpectedNext,
     expected_next2: ExpectedNext,
     (h1, h2): (String, String),
@@ -309,7 +324,7 @@ fn crack_inner(
     // let it1 = Box::new(NextState::new(t1.clone()));
     // let it2: Box<dyn Iterator<Item = _>> = Box::new(NextState::new(t2.clone()));
 
-    for (ch1, ans, t1) in it1 {
+    for (ch1, ans, _, t1) in it1 {
         let ch2 = cipher[0] ^ ch1;
         // eprintln!(
         //     "'{h1}{}' '{h2}{}' \t\t{} {ch1} {ch2}",
@@ -472,131 +487,12 @@ fn crack_inner(
     // })
 }
 
-#[derive(Clone)]
-struct State<'a, 'b> {
-    queries_left: Queries<'a>,
-    queries_right: Queries<'a>,
-    cipher: &'b [u8],
-    left: String,
-    right: String,
-    expected_next1: ExpectedNext,
-    expected_next2: ExpectedNext,
-}
-
-impl<'a, 'b> PartialEq for State<'a, 'b> {
-    fn eq(&self, other: &Self) -> bool {
-        self.left == other.left
-            && self.right == other.right
-            && self.cipher == other.cipher
-            && self.expected_next1 == other.expected_next1
-            && self.expected_next2 == other.expected_next2
-    }
-}
-
-impl PartialOrd for State<'_, '_> {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Eq for State<'_, '_> {}
-
-impl Ord for State<'_, '_> {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.cipher.len().cmp(&other.cipher.len())
-    }
-}
-
-fn tasks_of_answer(ans: Answer) -> impl Iterator<Item = ExpectedNext> + Clone {
-    ans.is_match()
-        .then_some(ExpectedNext::Special)
-        .into_iter()
-        .chain(ans.is_prefix().then_some(ExpectedNext::Word))
-}
-
-pub fn crack_non_rec(cipher: &[u8], root: &Trie<u8>) -> Vec<(String, String)> {
-    // make this a binary heap?
-    let mut stack = vec![State {
-        queries_left: Queries::new(root.inc_search()),
-        queries_right: Queries::new(root.inc_search()),
-        left: String::with_capacity(cipher.len()),
-        right: String::with_capacity(cipher.len()),
-        cipher,
-        expected_next1: ExpectedNext::Word,
-        expected_next2: ExpectedNext::Word,
-    }];
-
-    let mut res = vec![];
-    let mut seen = 0usize;
-
-    use std::io::Write;
-    let mut f = File::create("res").unwrap();
-
-    while let Some(State {
-        queries_left,
-        queries_right,
-        cipher,
-        left,
-        right,
-        expected_next1,
-        expected_next2,
-    }) = stack.pop()
-    {
-        seen += 1;
-
-        if seen % 10_000 == 0 {
-            eprintln!("seen {seen} states, have {} 'valid' solutions", res.len());
-            f.flush().expect("failed to flush (ew)");
-        }
-        if cipher.is_empty() {
-            writeln!(&mut f, "{left} {right}").expect("failed to write");
-            res.push((left, right));
-            continue;
-        }
-        let it1 = match expected_next1 {
-            ExpectedNext::Word => NextStateExpected::Word(Box::new(NextState::new(queries_left))),
-            ExpectedNext::Special => NextStateExpected::Special { i: 0, root },
-        };
-        let it2 = match expected_next2 {
-            ExpectedNext::Word => NextStateExpected::Word(Box::new(NextState::new(queries_right))),
-            ExpectedNext::Special => NextStateExpected::Special { i: 0, root },
-        };
-
-        for ((ch1, ans1, queries_left), (ch2, ans2, queries_right)) in it1
-            .cartesian_product(it2)
-            .filter(|&((left, _, _), (right, _, _))| left ^ cipher[0] == right)
-        {
-            let mut left = left.clone();
-            left.push(ch1 as char);
-            let mut right = right.clone();
-            right.push(ch2 as char);
-
-            let tasks = tasks_of_answer(ans1).cartesian_product(tasks_of_answer(ans2));
-
-            for (expected_next1, expected_next2) in tasks {
-                stack.push(State {
-                    // yes, this clones one time too much, but do I care?
-                    queries_left: queries_left.clone(),
-                    queries_right: queries_right.clone(),
-                    cipher: &cipher[1..],
-                    left: left.clone(),
-                    right: right.clone(),
-                    expected_next1,
-                    expected_next2,
-                });
-            }
-        }
-    }
-
-    res
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
     fn next_state_iterator() {
-        let trie = build_trie(["yes", "year", "you", "cyan"].iter(), []);
+        let trie = build_trie(["yes", "year", "you", "cyan"].iter().cloned());
 
         let mut cy = trie.inc_search();
         cy.query(&b'c');
@@ -613,7 +509,7 @@ mod tests {
 
     #[test]
     fn next_state_iterator_advances_correctly() {
-        let trie = build_trie(["yes", "year", "you", "cyan"].iter(), []);
+        let trie = build_trie(["yes", "year", "you", "cyan"].iter().cloned());
 
         let mut cy = trie.inc_search();
         cy.query(&b'c');
@@ -622,7 +518,7 @@ mod tests {
             inner: vec![trie.inc_search(), cy],
         };
 
-        let (_, ans, new_q) = NextState::new(q)
+        let (_, ans, _, new_q) = NextState::new(q)
             .find(|x| x.0 == b'y')
             .expect("y is a valid next char");
 

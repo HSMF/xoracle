@@ -1,4 +1,6 @@
-use xoracle::{build_trie, crack, crack_non_rec, xor, xor_strings, Queries};
+use xoracle::{
+    all::build_trie_importance, build_trie, crack, crack_non_rec, xor, xor_strings, Queries,
+};
 
 fn main() {
     let a = std::env::args().nth(1).unwrap_or("yes".to_owned());
@@ -14,17 +16,16 @@ fn main() {
         .filter(|x| *x != "th")
         .filter(|x| *x != "ye");
 
-    let trie = build_trie(wordsi.clone(), []);
+    let trie = build_trie(wordsi.clone());
     let special_chars = "'\" ,.";
     let more_trie = build_trie(
         wordsi.clone(), // .flat_map(|x| special_chars.chars().map(move |ch| format!("{ch}{x}"))), // .chain(
-        //     words
-        //         .lines()
-        //         .filter_map(|x| x.split_whitespace().next())
-        //         .filter(|x| x.is_ascii())
-        //         .flat_map(|x| special_chars.chars().map(move |ch| format!("{x}{ch}"))),
-        // )
-        special_chars.bytes(),
+                        //     words
+                        //         .lines()
+                        //         .filter_map(|x| x.split_whitespace().next())
+                        //         .filter(|x| x.is_ascii())
+                        //         .flat_map(|x| special_chars.chars().map(move |ch| format!("{x}{ch}"))),
+                        // )
     );
 
     let cipher = xor_strings(&a, &b);
@@ -50,6 +51,14 @@ fn main() {
     } else {
         println!("couldn't find valid plain text");
     }
+
+    let trie = build_trie_importance(
+        words
+            .lines()
+            .filter_map(|x| x.split_once(' '))
+            .filter_map(|(word, p)| p.parse().ok().map(|p| (word, p)))
+            .filter(|(x, _)| x.is_ascii()),
+    );
 
     let ans = crack_non_rec(&cipher, &trie);
 
